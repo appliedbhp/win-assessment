@@ -392,31 +392,95 @@ async function checkLicenseKey(licenseKey) {
   return data; // { ok: true } or { ok: false, error }
 }
 
+// Prefill link support: https://win.getadhd.care/?license=ABC123 (or ?key=)
+// auto-fills and caches the license key on load, so an assessor can be sent
+// a one-time link instead of typing their key in at all. Once cached, the
+// URL is no longer needed on future visits from the same browser.
+function getLicenseKeyFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("license") || params.get("key") || params.get("licenseKey");
+}
+
 async function initRememberedLicenseKey() {
-  const saved = localStorage.getItem(LICENSE_STORAGE_KEY);
+  const fromUrl = getLicenseKeyFromUrl();
+  const saved = fromUrl || localStorage.getItem(LICENSE_STORAGE_KEY);
   if (!saved) return;
   setLicenseFieldValues(saved);
   try {
     const result = await checkLicenseKey(saved);
-    if (!result.ok) {
+    if (result.ok) {
+      localStorage.setItem(LICENSE_STORAGE_KEY, saved);
+    } else {
       forgetLicenseKey();
-      setStatus("status", "Your saved license key is no longer active. Please re-enter it.", "error");
+      setStatus("status", fromUrl
+        ? "That license key link is not active. Please contact your assessor for a valid link."
+        : "Your saved license key is no longer active. Please re-enter it.", "error");
     }
   } catch (e) {
-    // Network hiccup checking the cached key — leave it filled in;
+    // Network hiccup checking the key — leave it filled in;
     // the next real action (start/lookup) will re-validate it anyway.
   }
 }
 
-// Keep both License Key fields (Start New Assessment / Lookup) in sync
-// within a session so the assessor only has to type it once per visit.
+// ---- Remembered assessor name: same idea as the license key, but no
+// active/expired check needed — it's just a label, not a security gate. ----
+const ASSESSOR_NAME_STORAGE_KEY = "winAssessmentAssessorName";
+
+function getAssessorFields() {
+  return [document.getElementById("assessorName"), document.getElementById("lookupAssessorName")].filter(Boolean);
+}
+
+function setAssessorFieldValues(value) {
+  getAssessorFields().forEach(el => { el.value = value; });
+}
+
+function rememberAssessorName(name) {
+  if (name) localStorage.setItem(ASSESSOR_NAME_STORAGE_KEY, name);
+  setAssessorFieldValues(name || "");
+}
+
+function initRememberedAssessorName(fromUrl) {
+  const saved = fromUrl || localStorage.getItem(ASSESSOR_NAME_STORAGE_KEY);
+  if (saved) setAssessorFieldValues(saved);
+}
+
+// ---- Client ID prefill: URL-only, never cached — unlike the license key
+// and assessor name, the client changes every time, so there's nothing to
+// remember across visits. Start and Lookup fields are filled independently
+// (no live mirroring) since they're genuinely separate actions. ----
+function initClientIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const clientId = params.get("clientId") || params.get("client");
+  if (!clientId) return;
+  const startField = document.getElementById("clientId");
+  const lookupField = document.getElementById("lookupClientId");
+  if (startField) startField.value = clientId;
+  if (lookupField) lookupField.value = clientId;
+}
+
+// Keep both License Key fields, and both Assessor Name fields, in sync
+// within a session so the assessor only has to type each one once per visit.
 document.addEventListener("input", (e) => {
   if (e.target && e.target.matches("#licenseKey, #lookupLicenseKey")) {
     setLicenseFieldValues(e.target.value);
   }
+  if (e.target && e.target.matches("#assessorName, #lookupAssessorName")) {
+    setAssessorFieldValues(e.target.value);
+  }
 });
 
+function getUrlParam(...names) {
+  const params = new URLSearchParams(window.location.search);
+  for (const name of names) {
+    const v = params.get(name);
+    if (v) return v;
+  }
+  return null;
+}
+
 initRememberedLicenseKey();
+initRememberedAssessorName(getUrlParam("assessorName", "assessor"));
+initClientIdFromUrl();
 
 async function fetchAllWin() {
   const res = await fetch(`${WORKER_URL}/win`);
@@ -487,6 +551,7 @@ async function loadAssessment() {
       return;
     }
     rememberLicenseKey(licenseKey);
+    rememberAssessorName(assessorName);
     if (isNewClient && !verify.isNew) {
       setStatus("status", "This Client ID already has an assessment on file. Uncheck \"New Client\" or use a different Client ID.", "error");
       return;
@@ -734,6 +799,7 @@ async function lookupClient() {
       return;
     }
     rememberLicenseKey(licenseKey);
+    rememberAssessorName(assessorName);
   } catch (e) {
     setStatus("lookupStatus", "Error verifying PIN: " + e.message, "error");
     return;
