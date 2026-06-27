@@ -357,6 +357,67 @@ function toggleConfirmPin() {
   if (!checked) document.getElementById("startPinConfirm").value = "";
 }
 
+// ---- Remembered license key: once a key checks out as active, cache it in
+// this browser so the assessor doesn't have to retype it every visit. Still
+// re-validated (silently) on every page load and before every PIN check, so
+// a lapsed/deactivated license clears itself instead of staying stuck. ----
+const LICENSE_STORAGE_KEY = "winAssessmentLicenseKey";
+
+function getLicenseFields() {
+  return [document.getElementById("licenseKey"), document.getElementById("lookupLicenseKey")].filter(Boolean);
+}
+
+function setLicenseFieldValues(value) {
+  getLicenseFields().forEach(el => { el.value = value; });
+}
+
+function rememberLicenseKey(licenseKey) {
+  if (licenseKey) localStorage.setItem(LICENSE_STORAGE_KEY, licenseKey);
+  setLicenseFieldValues(licenseKey || "");
+}
+
+function forgetLicenseKey() {
+  localStorage.removeItem(LICENSE_STORAGE_KEY);
+  setLicenseFieldValues("");
+}
+
+async function checkLicenseKey(licenseKey) {
+  const res = await fetch(`${WORKER_URL}/check-license`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ licenseKey })
+  });
+  const data = await res.json();
+  if (!res.ok && !data.error) throw new Error("License check failed");
+  return data; // { ok: true } or { ok: false, error }
+}
+
+async function initRememberedLicenseKey() {
+  const saved = localStorage.getItem(LICENSE_STORAGE_KEY);
+  if (!saved) return;
+  setLicenseFieldValues(saved);
+  try {
+    const result = await checkLicenseKey(saved);
+    if (!result.ok) {
+      forgetLicenseKey();
+      setStatus("status", "Your saved license key is no longer active. Please re-enter it.", "error");
+    }
+  } catch (e) {
+    // Network hiccup checking the cached key — leave it filled in;
+    // the next real action (start/lookup) will re-validate it anyway.
+  }
+}
+
+// Keep both License Key fields (Start New Assessment / Lookup) in sync
+// within a session so the assessor only has to type it once per visit.
+document.addEventListener("input", (e) => {
+  if (e.target && e.target.matches("#licenseKey, #lookupLicenseKey")) {
+    setLicenseFieldValues(e.target.value);
+  }
+});
+
+initRememberedLicenseKey();
+
 async function fetchAllWin() {
   const res = await fetch(`${WORKER_URL}/win`);
   const data = await res.json();
@@ -425,6 +486,7 @@ async function loadAssessment() {
       setStatus("status", verify.error || "Incorrect PIN for this Client ID.", "error");
       return;
     }
+    rememberLicenseKey(licenseKey);
     if (isNewClient && !verify.isNew) {
       setStatus("status", "This Client ID already has an assessment on file. Uncheck \"New Client\" or use a different Client ID.", "error");
       return;
@@ -671,6 +733,7 @@ async function lookupClient() {
       setStatus("lookupStatus", verify.error || "Incorrect PIN.", "error");
       return;
     }
+    rememberLicenseKey(licenseKey);
   } catch (e) {
     setStatus("lookupStatus", "Error verifying PIN: " + e.message, "error");
     return;
